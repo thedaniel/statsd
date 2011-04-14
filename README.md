@@ -5,6 +5,7 @@ A network daemon for aggregating statistics (counters and timers), rolling them 
 
 We ([Etsy][etsy]) [blogged][blog post] about how it works and why we created it.
 
+(**note:** This branch is a simple HTTP rewrite that accepts PUTS of the form m=glork:320|ms;gorets:1|c;gorets:5|c et cetera)
 
 Concepts
 --------
