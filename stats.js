@@ -2,58 +2,79 @@ var dgram  = require('dgram')
   , sys    = require('sys')
   , net    = require('net')
   , config = require('./config')
+  , http   = require('http')
+  , qs     = require('querystring');
 
 var counters = {};
 var timers = {};
-var debugInt, flushInt, server;
+var debugInt, flushInt, httpServer;
 
 config.configFile(process.argv[2], function (config, oldConfig) {
   if (! config.debug && debugInt) {
-    clearInterval(debugInt); 
+    clearInterval(debugInt);
     debugInt = false;
   }
 
   if (config.debug) {
     if (debugInt !== undefined) { clearInterval(debugInt); }
-    debugInt = setInterval(function () { 
+    debugInt = setInterval(function () {
       sys.log("Counters:\n" + sys.inspect(counters) + "\nTimers:\n" + sys.inspect(timers));
     }, config.debugInterval || 10000);
   }
 
-  if (server === undefined) {
-    server = dgram.createSocket('udp4', function (msg, rinfo) {
-      if (config.dumpMessages) { sys.log(msg.toString()); }
-      var bits = msg.toString().split(':');
-      var key = bits.shift()
-                    .replace(/\s+/g, '_')
-                    .replace(/\//g, '-')
-                    .replace(/[^a-zA-Z_\-0-9\.]/g, '');
+  var processMessage = function(msg){
+    if (config.dumpMessages) { sys.log(msg.toString()); }
+    var bits = msg.toString().split(':');
+    var key = bits.shift()
+      .replace(/\s+/g, '_')
+      .replace(/\//g, '-')
+      .replace(/[^a-zA-Z_\-0-9\.]/g, '');
 
-      if (bits.length == 0) {
-        bits.push("1");
-      }
+    if (bits.length == 0) {
+      bits.push("1");
+    }
 
-      for (var i = 0; i < bits.length; i++) {
-        var sampleRate = 1;
-        var fields = bits[i].split("|");
-        if (fields[1].trim() == "ms") {
-          if (! timers[key]) {
-            timers[key] = [];
-          }
-          timers[key].push(Number(fields[0] || 0));
-        } else {
-          if (fields[2] && fields[2].match(/^@([\d\.]+)/)) {
-            sampleRate = Number(fields[2].match(/^@([\d\.]+)/)[1]);
-          }
-          if (! counters[key]) {
-            counters[key] = 0;
-          }
-          counters[key] += Number(fields[0] || 1) * (1 / sampleRate);
+    for (var i = 0; i < bits.length; i++) {
+      var sampleRate = 1;
+      var fields = bits[i].split("|");
+      if (fields[1].trim() == "ms") {
+        if (! timers[key]) {
+          timers[key] = [];
         }
+        timers[key].push(Number(fields[0] || 0));
+      } else {
+        if (fields[2] && fields[2].match(/^@([\d\.]+)/)) {
+          sampleRate = Number(fields[2].match(/^@([\d\.]+)/)[1]);
+        }
+        if (! counters[key]) {
+          counters[key] = 0;
+        }
+        counters[key] += Number(fields[0] || 1) * (1 / sampleRate);
+      }
+    }
+  }
+
+  if (httpServer == undefined) {
+    httpServer = http.createServer(function(req, res){
+      if (req.method != 'PUT') {
+        res.writeHead(405, {'Content-Type': 'text/plain'});
+        res.end('');
+      } else {
+        var body = '';
+        req.on('data', function(chunk){body += chunk});
+        req.on('end', function(){
+          var metrics = qs.parse(body)['m'];
+          metrics = metrics.split(';');
+          for (var i=0; i<metrics.length; i++) {
+            processMessage(metrics[i]);
+          }
+          res.writeHead(200, {'Content-Type': 'text/plain'});
+          res.end('OK for ' + metrics.length + ' metrics');
+        });
       }
     });
 
-    server.bind(config.port || 8125);
+    httpServer.listen(config.port || 8126);
 
     var flushInterval = Number(config.flushInterval || 10000);
 
@@ -113,7 +134,7 @@ config.configFile(process.argv[2], function (config, oldConfig) {
       }
 
       statString += 'statsd.numStats ' + numStats + ' ' + ts + "\n";
-      
+
       var graphite = net.createConnection(config.graphitePort, config.graphiteHost);
 
       graphite.on('connect', function() {
